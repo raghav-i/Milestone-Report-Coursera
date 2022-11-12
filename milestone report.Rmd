@@ -1,0 +1,475 @@
+---
+title: "Coursera Milestone Report"
+author: "Raghavendra Dabral"
+date: "11 November 2022"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    theme: cosmo
+    keep_md: no
+    df_print: paged
+    css: css/custom.css
+  pdf_document:
+    toc: yes
+    df_print: kable
+    number_sections: false
+    fig_caption: yes
+    highlight: tango
+    dev: pdf
+  word_document:
+    toc: yes
+    df_print: paged
+    keep_md: no
+---
+
+## Synopsis
+
+This is the Milestone Report for Coursera JHU Data Science Specialization
+
+The objective of this report is to develop an understanding of the various
+statistical properties of the [HC Corpora Dataset](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip) 
+that can be used later to build the prediction model for the final data product - 
+the Shiny application. Using EDA, this report describes the major features of the
+training data and then summarizes all plans for creating the final model.
+
+The model will be trained from the
+following three sources of text data:
+
+1. Blogs
+1. News
+1. Twitter
+
+This project will only focus on the English corpora.
+
+## Environment Setup
+
+```{r load-packages, message = FALSE, echo = TRUE}
+library(knitr)
+rm(list = ls(all.names = TRUE))
+```
+
+```{r setup, include = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, fig.path = 'figures/')
+gc()
+options(scipen = 1)
+
+# Detecting the OS
+switch(Sys.info()[['sysname']],
+    Windows = {os = "Microsoft Windows"},
+    Linux = {os = "Linux"},
+    Darwin = {os = "macOS"})
+
+# knit hook to allow partial output from a code chunk
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options)) # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  more <- "..."
+  if (length(lines) == 1) { # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), more)
+    }
+  } else {
+    x <- c(more, x[lines], more)
+  }
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```
+
+## Load the Data
+
+Download, unzip and load the training data.
+
+```{r load-data, echo = TRUE}
+trainURL <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+trainDataFile <- "data/Coursera-SwiftKey.zip"
+
+if (!file.exists('data')) {
+    dir.create('data')
+}
+
+if (!file.exists("data/final/en_US")) {
+    tempFile <- tempfile()
+    download.file(trainURL, tempFile)
+    unzip(tempFile, exdir = "data")
+    unlink(tempFile)
+}
+
+# blogs
+blogsFileName <- "data/final/en_US/en_US.blogs.txt"
+con <- file(blogsFileName, open = "r")
+blogs <- readLines(con, encoding = "UTF-8", skipNul = TRUE)
+close(con)
+
+# news
+newsFileName <- "data/final/en_US/en_US.news.txt"
+con <- file(newsFileName, open = "r")
+news <- readLines(con, encoding = "UTF-8", skipNul = TRUE)
+close(con)
+
+# twitter
+twitterFileName <- "data/final/en_US/en_US.twitter.txt"
+con <- file(twitterFileName, open = "r")
+twitter <- readLines(con, encoding = "UTF-8", skipNul = TRUE)
+close(con)
+
+rm(con)
+```
+
+## Summary of the Data
+
+A brief description of the three text corpora is given here, including the file sizes, 
+number of lines, characters, and words for each source file. This is done before 
+creating the unified document corpus and cleaning the data. Basic statistics on the 
+number of words per line are also provided (min, mean, and max).
+
+### Initial Data Summary
+
+```{r initial-data-summary-table, echo = FALSE, results = 'hold'}
+library(stringi)
+library(kableExtra)
+
+# sample size
+sampleSize = 0.01
+
+# file size
+fileSizeMB <- round(file.info(c(blogsFileName,
+                                newsFileName,
+                                twitterFileName))$size / 1024 ^ 2)
+
+# lines per file
+numLines <- sapply(list(blogs, news, twitter), length)
+
+# characters per file
+numChars <- sapply(list(nchar(blogs), nchar(news), nchar(twitter)), sum)
+
+# words per file
+numWords <- sapply(list(blogs, news, twitter), stri_stats_latex)[4,]
+
+# words per line
+wpl <- lapply(list(blogs, news, twitter), function(x) stri_count_words(x))
+
+# words per line summary
+wplSummary = sapply(list(blogs, news, twitter),
+             function(x) summary(stri_count_words(x))[c('Min.', 'Mean', 'Max.')])
+rownames(wplSummary) = c('WPL.Min', 'WPL.Mean', 'WPL.Max')
+
+summary <- data.frame(
+    File = c("en_US.blogs.txt", "en_US.news.txt", "en_US.twitter.txt"),
+    FileSize = paste(fileSizeMB, " MB"),
+    Lines = numLines,
+    Characters = numChars,
+    Words = numWords,
+    t(rbind(round(wplSummary)))
+)
+
+kable(summary,
+      row.names = FALSE,
+      align = c("l", rep("r", 7)),
+      caption = "") %>% kable_styling(position = "left")
+```
+
+A preliminary analysis of the data reveals that, on average, each text corpus has 
+a low word count per line. In general, blogs have more words per line than news, 
+which is followed by twitter, which has the fewest words per line.
+Given that a tweet may only include a fixed amount of characters, the lower number 
+of words per line for the Twitter data was to be expected. Research indicates that 
+barely 1% of tweets exceed the 280-character limit, and only 12% of tweets are longer 
+than 140 characters, despite Twitter's increase in character limit from 140 to 280 in 2017. 
+Perhaps consumers were simply conditioned to the 140-character limit after so many years.
+
+The size of the text files is another crucial finding from this preliminary analysis. 
+A sample size of `r round(sampleSize*100)`% will be obtained from all three data sets 
+to reduce processing time, and the data will then be integrated into a single document 
+corpus for further analyses later in this report.
+
+### Histogram to show words in each line
+
+```{r initial-data-summary-plot, echo = FALSE, results = 'hold'}
+library(ggplot2)
+library(gridExtra)
+
+plot1 <- qplot(wpl[[1]],
+               geom = "histogram",
+               main = "US Blogs",
+               xlab = "Words per Line",
+               ylab = "Frequency",
+               binwidth = 5)
+
+plot2 <- qplot(wpl[[2]],
+               geom = "histogram",
+               main = "US News",
+               xlab = "Words per Line",
+               ylab = "Frequency",
+               binwidth = 5)
+
+plot3 <- qplot(wpl[[3]],
+               geom = "histogram",
+               main = "US Twitter",
+               xlab = "Words per Line",
+               ylab = "Frequency",
+               binwidth = 1)
+
+plotList = list(plot1, plot2, plot3)
+do.call(grid.arrange, c(plotList, list(ncol = 1)))
+
+# free up memory
+rm(plot1, plot2, plot3)
+```
+
+The histogram plots above also indicate the comparatively low word count in the 
+three source files that were tracked before in this section. This finding appears 
+to confirm a general tendency for brief and to the point communications, which could 
+prove helpful later on in the project.
+
+## Preparing the Data
+
+```{r prepare-the-data-sample-and-clean, echo = FALSE}
+# set seed for reproducibility
+set.seed(660067)
+
+# sample all three data sets
+sampleBlogs <- sample(blogs, length(blogs) * sampleSize, replace = FALSE)
+sampleNews <- sample(news, length(news) * sampleSize, replace = FALSE)
+sampleTwitter <- sample(twitter, length(twitter) * sampleSize, replace = FALSE)
+
+# remove all non-English characters from the sampled data
+sampleBlogs <- iconv(sampleBlogs, "latin1", "ASCII", sub = "")
+sampleNews <- iconv(sampleNews, "latin1", "ASCII", sub = "")
+sampleTwitter <- iconv(sampleTwitter, "latin1", "ASCII", sub = "")
+
+# combine all three data sets into a single data set
+sampleData <- c(sampleBlogs, sampleNews, sampleTwitter)
+sampleDataFileName <- "data/final/en_US/en_US.sample.txt"
+con <- file(sampleDataFileName, open = "w")
+writeLines(sampleData, con)
+close(con)
+
+# get number of lines and words from the sample data set
+sampleDataLines <- length(sampleData);
+sampleDataWords <- sum(stri_count_words(sampleData))
+
+# remove variables no longer needed
+rm(blogs, news, twitter, sampleBlogs, sampleNews, sampleTwitter)
+```
+
+The three data sets will be sampled at 'r round(sampleSize*100)'% prior to EDA in 
+order to enhance performance. After eliminating all non-English characters from the 
+subset of data, a single data set will be created. `r format(round(as.numeric(sampleDataLines)), big.mark = ",")` lines and `r format(round(as.numeric(sampleDataWords)), big.mark = ",")` words 
+make up the combined sample data set that will be put to disc.
+
+The next step is to compile the sampled data set into a corpus. The 
+transformation will be applied to each document using a custom function 
+called `buildCorpus`.
+
+The corpus will then be saved to disc in two different formats: as a text file and 
+as a serialized R object in RDS format. Finally, the corpus's first 10 documents (lines) will be shown.
+
+```{r prepare-the-data-build-corpus, message = FALSE, echo = FALSE}
+library(tm)
+
+# download foul words file
+badWordsURL <- "http://www.idevelopment.info/data/DataScience/uploads/full-list-of-bad-words_text-file_2018_07_30.zip"
+badWordsFile <- "data/full-list-of-bad-words_text-file_2018_07_30.txt"
+if (!file.exists('data')) {
+    dir.create('data')
+}
+if (!file.exists(badWordsFile)) {
+    tempFile <- tempfile()
+    download.file(badWordsURL, tempFile)
+    unzip(tempFile, exdir = "data")
+    unlink(tempFile)
+}
+
+buildCorpus <- function (dataSet) {
+    docs <- VCorpus(VectorSource(dataSet))
+    toSpace <- content_transformer(function(x, pattern) gsub(pattern, " ", x))
+    
+    # remove URL, Twitter handles and email patterns
+    docs <- tm_map(docs, toSpace, "(f|ht)tp(s?)://(.*)[.][a-z]+")
+    docs <- tm_map(docs, toSpace, "@[^\\s]+")
+    docs <- tm_map(docs, toSpace, "\\b[A-Z a-z 0-9._ - ]*[@](.*?)[.]{1,3} \\b")
+    
+    # remove profane words from the sample data set
+    con <- file(badWordsFile, open = "r")
+    profanity <- readLines(con, encoding = "UTF-8", skipNul = TRUE)
+    close(con)
+    profanity <- iconv(profanity, "latin1", "ASCII", sub = "")
+    docs <- tm_map(docs, removeWords, profanity)
+    
+    docs <- tm_map(docs, tolower)
+    docs <- tm_map(docs, removeWords, stopwords("english"))
+    docs <- tm_map(docs, removePunctuation)
+    docs <- tm_map(docs, removeNumbers)
+    docs <- tm_map(docs, stripWhitespace)
+    docs <- tm_map(docs, PlainTextDocument)
+    return(docs)
+}
+
+# build the corpus and write to disk (RDS)
+corpus <- buildCorpus(sampleData)
+saveRDS(corpus, file = "data/final/en_US/en_US.corpus.rds")
+
+# convert corpus to a df and write lines/words to disk (text)
+corpusText <- data.frame(text = unlist(sapply(corpus, '[', "content")), stringsAsFactors = FALSE)
+con <- file("data/final/en_US/en_US.corpus.txt", open = "w")
+writeLines(corpusText$text, con)
+close(con)
+
+kable(head(corpusText$text, 10),
+      row.names = FALSE,
+      col.names = NULL,
+      align = c("l"),
+      caption = "First 10 Documents") %>% kable_styling(position = "left")
+
+# remove variables no longer needed
+rm(sampleData)
+```
+
+## Exploratory Data Analysis
+
+To achieve the main objective of this study, exploratory data analysis will be carried out. 
+The most commonly used words, tokenizing, and n-gram creation are a few of the strategies 
+that will be used to establish an understanding of the training data.
+
+### Word Frequencies
+
+To show unusual word frequencies, a bar chart and word cloud will be created.
+
+```{r exploratory-data-analysis-word-frequencies, message = FALSE, echo = FALSE}
+library(wordcloud)
+library(RColorBrewer)
+
+tdm <- TermDocumentMatrix(corpus)
+freq <- sort(rowSums(as.matrix(tdm)), decreasing = TRUE)
+wordFreq <- data.frame(word = names(freq), freq = freq)
+
+# top 10 most frequent words
+g <- ggplot (wordFreq[1:10,], aes(x = reorder(wordFreq[1:10,]$word, -wordFreq[1:10,]$fre),
+                                  y = wordFreq[1:10,]$fre ))
+g <- g + geom_bar( stat = "Identity" , fill = I("grey50"))
+g <- g + geom_text(aes(label = wordFreq[1:10,]$fre), vjust = -0.20, size = 3)
+g <- g + xlab("")
+g <- g + ylab("Word Frequencies")
+g <- g + theme(plot.title = element_text(size = 14, hjust = 0.5, vjust = 0.5),
+               axis.text.x = element_text(hjust = 0.5, vjust = 0.5, angle = 45),
+               axis.text.y = element_text(hjust = 0.5, vjust = 0.5))
+g <- g + ggtitle("10 Most Frequent Words")
+print(g)
+
+# word cloud
+suppressWarnings (
+    wordcloud(words = wordFreq$word,
+              freq = wordFreq$freq,
+              min.freq = 1,
+              max.words = 100,
+              random.order = FALSE,
+              rot.per = 0.35, 
+              colors=brewer.pal(8, "Dark2"))
+)
+
+# remove variables no longer needed
+rm(tdm, freq, wordFreq, g)
+```
+
+### Tokenizing and N-Gram Generation
+
+Unigrams, bigrams and trigrams will all be supported by the predictive model I 
+intend to create for the Shiny application. I'll build functions to tokenize the 
+example data and create matrices of uniqrams, bigrams, and trigrams in this part 
+using the `RWeka` package.
+
+```{r exploratory-data-analysis-tokenize, message = FALSE, echo = FALSE}
+library(RWeka)
+
+unigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1))
+bigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+trigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+```
+
+#### Unigrams
+
+```{r exploratory-data-analysis-tokenize-unigrams, message = FALSE, echo = FALSE}
+# create term document matrix for the corpus
+unigramMatrix <- TermDocumentMatrix(corpus, control = list(tokenize = unigramTokenizer))
+
+# get frequencies of the most prevalent n-grams by removing sparse terms for each n-gram.
+unigramMatrixFreq <- sort(rowSums(as.matrix(removeSparseTerms(unigramMatrix, 0.99))), decreasing = TRUE)
+unigramMatrixFreq <- data.frame(word = names(unigramMatrixFreq), freq = unigramMatrixFreq)
+
+# generate plot
+g <- ggplot(unigramMatrixFreq[1:20,], aes(x = reorder(word, -freq), y = freq))
+g <- g + geom_bar(stat = "identity", fill = I("grey50"))
+g <- g + geom_text(aes(label = freq ), vjust = -0.20, size = 3)
+g <- g + xlab("")
+g <- g + ylab("Frequency")
+g <- g + theme(plot.title = element_text(size = 14, hjust = 0.5, vjust = 0.5),
+               axis.text.x = element_text(hjust = 1.0, angle = 45),
+               axis.text.y = element_text(hjust = 0.5, vjust = 0.5))
+g <- g + ggtitle("20 Most Common Unigrams")
+print(g)
+```
+
+#### Bigrams
+
+```{r exploratory-data-analysis-tokenize-bigrams, message = FALSE, echo = FALSE}
+# create term document matrix for the corpus
+bigramMatrix <- TermDocumentMatrix(corpus, control = list(tokenize = bigramTokenizer))
+
+# get frequencies of the most prevalent n-grams by removing sparse terms for each n-gram.
+bigramMatrixFreq <- sort(rowSums(as.matrix(removeSparseTerms(bigramMatrix, 0.999))), decreasing = TRUE)
+bigramMatrixFreq <- data.frame(word = names(bigramMatrixFreq), freq = bigramMatrixFreq)
+
+# generate plot
+g <- ggplot(bigramMatrixFreq[1:20,], aes(x = reorder(word, -freq), y = freq))
+g <- g + geom_bar(stat = "identity", fill = I("grey50"))
+g <- g + geom_text(aes(label = freq ), vjust = -0.20, size = 3)
+g <- g + xlab("")
+g <- g + ylab("Frequency")
+g <- g + theme(plot.title = element_text(size = 14, hjust = 0.5, vjust = 0.5),
+               axis.text.x = element_text(hjust = 1.0, angle = 45),
+               axis.text.y = element_text(hjust = 0.5, vjust = 0.5))
+g <- g + ggtitle("20 Most Common Bigrams")
+print(g)
+```
+
+#### Trigrams
+
+```{r exploratory-data-analysis-tokenize-trigrams, message = FALSE, echo = FALSE}
+# create term document matrix for the corpus
+trigramMatrix <- TermDocumentMatrix(corpus, control = list(tokenize = trigramTokenizer))
+
+# get frequencies of the most prevalent n-grams by removing sparse terms for each n-gram.
+trigramMatrixFreq <- sort(rowSums(as.matrix(removeSparseTerms(trigramMatrix, 0.9999))), decreasing = TRUE)
+trigramMatrixFreq <- data.frame(word = names(trigramMatrixFreq), freq = trigramMatrixFreq)
+
+# generate plot
+g <- ggplot(trigramMatrixFreq[1:20,], aes(x = reorder(word, -freq), y = freq))
+g <- g + geom_bar(stat = "identity", fill = I("grey50"))
+g <- g + geom_text(aes(label = freq ), vjust = -0.20, size = 3)
+g <- g + xlab("")
+g <- g + ylab("Frequency")
+g <- g + theme(plot.title = element_text(size = 14, hjust = 0.5, vjust = 0.5),
+               axis.text.x = element_text(hjust = 1.0, angle = 45),
+               axis.text.y = element_text(hjust = 0.5, vjust = 0.5))
+g <- g + ggtitle("20 Most Common Trigrams")
+print(g)
+```
+
+## Further steps in the future
+
+The Shiny app should accept a phrase (multiple words) as input and output the next word prediction. 
+For this, an n-gram model with a word frequency lookup similar to that carried out in the 
+exploratory data analysis part of this report will be used to create the prediction 
+algorithm. Based on the data acquired during the exploratory investigation, a 
+strategy will be developed. For instance, the frequency of each of its phrases 
+fell as n for each n-gram rose. Therefore, one approach may be to build the model 
+to look for the unigram that would result from the entered text first. Find the 
+most prevalent bigram model after a full phrase is typed, followed by a space, and so forth.
